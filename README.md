@@ -1,187 +1,97 @@
-<p align="center">
-    <img src="./assets/logo.png" width="150">
-</p>
+# FinMamba Ticker Research
 
-# FinMamba: Market-Aware Graph Enhanced Multi-Level Mamba for Stock Movement Prediction
+An experimental research project built on the upstream FinMamba implementation. We evaluate whether the model can rank individual stocks by future relative returns, test for persistent inverse relationships between ticker pairs, and measure performance across SPY volatility regimes.
 
-## 📰 News
+This is research software, not a trading system or investment advice.
 
-🚩 2026-06-22: FinMamba has been accepted as KDD 2026 Workshop on Machine Learning in Finance Oral.
+## What We Built
 
-🚩 2025-02-10: Initial upload to arXiv [PDF](https://arxiv.org/abs/2502.06707).
+- An individual-ticker inverse-return screen using adjusted daily prices and train-only regime thresholds.
+- A data-preparation pipeline for balanced Nasdaq-100 OHLCV panels and five-day excess-return labels.
+- A corrected, vectorized daily stock-relation generator, with regression tests against pairwise Pearson and Spearman calculations.
+- An opt-in CPU reference path for Mamba, plus an isolated Linux Docker image.
+- Holdout evaluation for rank information coefficient (IC), score buckets, volatility regimes, and ticker-pair stability.
 
-## 🌟 Overview
+The model outputs one score per ticker. It does not directly select long-short pairs. Pair discovery is analyzed separately, and the current graph construction does not preserve inverse correlations as signed relationships.
 
-FinMamba consists of  Temporal Stock-Correlation Graph learning and Multi-Scale Mamba for stock movement prediction.
+## Experiment
 
-![](./assets/FinMamba.png)
+We used the Nasdaq-100 roster returned by Nasdaq's API on 2026-10-02. Of 101 current constituents, 84 had complete adjusted OHLCV data from 2018-01-03 through 2026-09-24 and were included in the balanced model panel. Applying today's roster to historical data introduces survivorship bias.
 
-## 🛠 Usage
+The model input contains five features per ticker: open, high, low, and close returns relative to the prior close, plus log volume. Features are standardized per ticker using training-period statistics only. The target is each ticker's next-five-trading-day adjusted return minus the same-day universe mean.
 
-The complete FinMamba workflow consists of three sequential stages:
+| Split | Dates |
+|---|---|
+| Training | 2018 through 2021 |
+| Validation | 2022 |
+| Holdout | 2023-01-01 through 2026-09-24 |
 
-```text
-Generate daily relation graphs → Train FinMamba → Run the backtest
-```
+The industry-relation matrix was set to all ones because point-in-time industry classifications were unavailable. The graph therefore uses daily stock correlations without an industry mask.
 
-Please execute the steps below in this order. In particular, the daily short-term stock-relation graphs must be generated before training starts.
+## Results
 
-### Prerequisites
+The run used one epoch and a reduced model configuration in CPU reference mode. It is a feasibility baseline, not a full reproduction of the paper.
 
-Install the required Python packages:
+| SPY volatility regime | Holdout days | Mean rank IC | Median rank IC | Lowest-score bucket return | Highest-score bucket return |
+|---|---:|---:|---:|---:|---:|
+| High | 126 | -0.0010 | -0.0147 | +0.073% | -0.016% |
+| Low | 263 | -0.0351 | -0.0318 | +0.163% | -0.089% |
+| Mid | 546 | -0.0076 | -0.0005 | +0.170% | +0.018% |
 
-```bash
-pip install -r requirements.txt
-```
+The score buckets contain mean next-five-day excess returns. FinMamba's highest-score bucket underperformed its lowest-score bucket in every regime in this run. These results do not show useful ranking performance.
 
-To run the backtest notebook, also make sure that Jupyter Notebook is available in the environment:
+The inverse-pair screen found **0 persistent inverse pairs** among 10,458 ticker-pair/regime rows. The rule required a latest 60-return training-window correlation at or below -0.3, with at least 75% of training windows meeting that threshold. Mean pairwise holdout correlation was +0.398 in high-, +0.106 in low-, and +0.170 in mid-SPY-volatility periods.
 
-```bash
-pip install notebook
-```
+SPY's 20-day annualized realized volatility defines low, mid, and high regimes. Tercile thresholds were fit using training data only: 10.38% and 17.15%.
 
-For the NASDAQ 100 example, the expected input files are organized as follows:
+See [FINMAMBA_RESULTS.md](FINMAMBA_RESULTS.md) for full methodology, baselines, implementation notes, and caveats. See [PAIR_RESEARCH_RESULTS.md](PAIR_RESEARCH_RESULTS.md) for the detailed pair-screen results.
 
-```text
-data/
-├── nasdaqfea.pkl
-├── nasdaqlab.pkl
-└── nasdaq_industry_relationship.npy
+## Reproduce
 
-stock/
-└── NASDAQ100_new.csv
-```
+### Local Research Environment
 
-The feature data, label data, industry-relation matrix, and backtest market data must use a consistent stock universe and trading calendar.
-
-### Step 1: Generate Daily Short-Term Stock-Relation Graphs
-
-Before training, run `genRelation.py` to generate a short-term relation graph for every trading day. For each day, the script uses a rolling historical window ending on that day to estimate pairwise stock correlations and saves the resulting adjacency matrix as a pickle file.
-
-For example, the following command generates 20-day Spearman relation graphs for the NASDAQ 100 universe:
-
-```bash
-python genRelation.py \
-  --stock nasdaq \
-  --data-dir data \
-  --output-dir nasdaq_stock_relation \
-  --lookback 20 \
-  --method spearman \
-  --device auto
-```
-
-The generated files are stored as:
-
-```text
-nasdaq_stock_relation/
-├── day0.pkl
-├── day1.pkl
-├── day2.pkl
-└── ...
-```
-
-One `day{index}.pkl` file is required for each trading day used by the training, validation, and test periods. The output directory must be the same as the relation directory configured for training. Use `--method pcc` instead of `--method spearman` to generate Pearson-correlation graphs.
-
-### Analyze Inverse Relationships Between Individual Tickers
-
-The standalone research baseline downloads adjusted closes, screens individual ticker pairs for persistent negative daily-return correlation using training data only, labels low/mid/high SPY-volatility regimes using training-period terciles, and evaluates a simple 20-day mean-reversion score by daily Spearman rank IC and forward-return buckets. It does not modify or train FinMamba; it gives us a transparent baseline to compare against.
-
-By default, the script fetches the current 101-symbol Nasdaq-100 roster from Nasdaq's components API and saves the roster date. Applying today's members to historical years creates survivorship bias; use point-in-time index membership before treating results as robust. A smaller explicit universe can be supplied with `--tickers`.
-
-Set up the project-local environment in PowerShell:
+From the repository root in PowerShell:
 
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-research.txt
 .\.venv\Scripts\python.exe research_ticker_pairs.py
+.\.venv\Scripts\python.exe prepare_finmamba_data.py
 ```
 
-The default training period ends on 2019-12-31 and the holdout begins on 2020-01-01. The pair screen uses non-overlapping 60-return windows; a candidate must have a latest training correlation at or below -0.3 and meet that threshold in at least 75% of its observed windows. The SPY 20-day realized-volatility cutoffs are fit on training data and then held fixed in the test period. The baseline score is the negative 20-day past return; its daily rank IC and next-day-return buckets are evaluated only on the holdout.
+The data-preparation script downloads the current Nasdaq-100 roster and adjusted OHLCV. Yahoo Finance data and derived files are not committed to this repository.
 
-The script writes adjusted closes, the roster snapshot, training-selected pairs, pair correlations by test regime, daily and summary IC, and return buckets under `outputs/ticker_research_nasdaq100/`. Pair correlation is descriptive, not a prediction that one ticker will fall when another rises. The score is a deliberately simple baseline, not a FinMamba result or a trading signal; include costs and realistic shorting constraints in any later strategy test.
+### CPU Reference Run
 
-See [PAIR_RESEARCH_RESULTS.md](PAIR_RESEARCH_RESULTS.md) for the pair-screen baseline and [FINMAMBA_RESULTS.md](FINMAMBA_RESULTS.md) for the trained-model experiment.
-
-### CPU Reference Training
-
-For a Linux CPU run without an NVIDIA adapter, build the isolated image and prepare the OHLCV panels and daily relation files first:
+Docker Desktop with its Linux engine is required. The image uses a CUDA-enabled PyTorch runtime because of the Mamba package's build requirements, but the commands below run on CPU and do not require a host NVIDIA GPU. The reference scan is much slower than the optimized CUDA kernel.
 
 ```powershell
 docker build -t finmamba-cpu -f Dockerfile.training .
-.\.venv\Scripts\python.exe prepare_finmamba_data.py
-docker run --rm -v "${PWD}:/workspace" -w /workspace finmamba-cpu python genRelation.py --stock nasdaq --data-dir data --output-dir nasdaq_stock_relation --lookback 20 --method spearman --device cpu
+$workspace = (Get-Location).Path
+docker run --rm -v "${workspace}:/workspace" -w /workspace finmamba-cpu python genRelation.py --stock nasdaq --data-dir data --output-dir nasdaq_stock_relation --lookback 20 --method spearman --device cpu
+docker run --rm -v "${workspace}:/workspace" -w /workspace finmamba-cpu python train_finmamba.py --stock nasdaq --data-dir data --relation-dir nasdaq_stock_relation --relation-pattern 'day{index}.pkl' --train-start 2018-01-01 --train-end 2021-12-31 --valid-start 2022-01-01 --valid-end 2022-12-31 --test-start 2023-01-01 --test-end 2026-09-24 --seq-len 20 --market-kernel-sizes 4 10 20 --gat-hidden-channels 16 --gat-out-channels auto --gat-layers 2 --gat-heads 2 --mamba-hidden-sizes 32 32 --mamba-num-heads 2 --mamba-output-size 16 --mamba-d-state 16 --mamba-d-conv 2 --mamba-expand 1 --dropout 0.1 --epochs 1 --batch-size 16 --learning-rate 0.001 --weight-decay 1e-7 --patience 1 --log-interval 20 --seed 2024 --device cpu --output-dir outputs/finmamba_reference --prediction-layout date-major
+docker run --rm -v "${workspace}:/workspace" -w /workspace finmamba-cpu python evaluate_finmamba_outputs.py --train-start 2018-01-01 --train-end 2021-12-31 --test-start 2023-01-01
 ```
 
-Then train and evaluate:
+The Docker image sets `FINMAMBA_MAMBA_REFERENCE=1`, which selects the upstream pure-PyTorch reference recurrence and disables the optimized CUDA path. Unset that variable in a CUDA development environment to use the normal fast path.
 
-```powershell
-docker run --rm -v "${PWD}:/workspace" -w /workspace finmamba-cpu python train_finmamba.py --stock nasdaq --data-dir data --relation-dir nasdaq_stock_relation --train-start 2018-01-01 --train-end 2021-12-31 --valid-start 2022-01-01 --valid-end 2022-12-31 --test-start 2023-01-01 --test-end 2026-09-24 --seq-len 20 --epochs 1 --batch-size 16 --device cpu --output-dir outputs/finmamba_reference --prediction-layout date-major
-docker run --rm -v "${PWD}:/workspace" -w /workspace finmamba-cpu python evaluate_finmamba_outputs.py
-```
+## Important Limitations
 
-The training image sets `FINMAMBA_MAMBA_REFERENCE=1`, which uses the upstream PyTorch reference scan and disables the optimized CUDA path. It preserves the Mamba recurrence but is slower and is intended for small feasibility experiments. The standard path remains unchanged when this environment variable is unset.
+- The Nasdaq-100 roster is current, not point-in-time; historical membership and survivorship bias are not controlled.
+- Yahoo Finance is the data source; no transaction costs, slippage, borrow fees, short availability, or portfolio sizing are modeled.
+- The model experiment uses one epoch, a reduced configuration, and CPU reference execution. Its results are preliminary and must not be compared directly with the paper's reported results.
+- The current `MarketGuideInception` parameters receive no gradients in the tested backward pass because the learned rate is converted to an integer for top-k selection. This is a model-design issue to investigate before further tuning.
+- Pairwise correlation is descriptive and does not establish that one ticker will fall when another rises.
 
-### Step 2: Train and Evaluate FinMamba
+Generated prices, relation matrices, checkpoints, and CSV outputs are excluded from Git by `.gitignore`.
 
-After all daily relation graphs have been generated, train FinMamba with:
+## Upstream Credit
 
-```bash
-bash run_finmamba.sh
-```
+This project is derived from [TROUBADOUR000/FinMamba](https://github.com/TROUBADOUR000/FinMamba), the PyTorch implementation of **FinMamba: Market-Aware Graph Enhanced Multi-Level Mamba for Stock Movement Prediction** by Yifan Hu, Peiyuan Liu, Yuante Li, Dawei Cheng, Naiqi Li, Tao Dai, Jigang Bao, and Shu-Tao Xia. The original repository reports acceptance to the KDD 2026 Workshop on Machine Learning in Finance.
 
-All model, optimization, data-split, device, and output parameters are defined in `run_finmamba.sh`. By default, the script reads the relation graphs from `nasdaq_stock_relation/` and produces:
+The upstream model and original assets are retained where used. This repository's ticker-pair analysis, data preparation, relation-generation correction, CPU reference option, evaluation, tests, and experiment reports are our additions. The upstream `LICENSE` is retained; see it for the Apache License 2.0 terms.
 
-```text
-best_model.pth   # best checkpoint selected on the validation set
-scores.csv       # raw prediction scores on the test set
-pred.csv         # predictions aligned with stock identifiers and dates
-```
-
-Common paths and the device can be overridden without editing the script. For example:
-
-```bash
-DEVICE=cuda:1 \
-RELATION_DIR=nasdaq_stock_relation \
-OUTPUT_DIR=outputs/nasdaq \
-bash run_finmamba.sh
-```
-
-### Step 3: Run the Backtest
-
-After training is complete, use `backtest.ipynb` to evaluate the trading performance of the predictions in `pred.csv`.
-
-By default, the notebook reads:
-
-```text
-pred.csv
-stock/NASDAQ100_new.csv
-```
-
-Start Jupyter Notebook from the project root:
-
-```bash
-jupyter notebook backtest.ipynb
-```
-
-Then run the notebook cells in order to construct the prediction-based portfolio and calculate the backtest results. If `OUTPUT_DIR` was changed during training, update the `pred.csv` path in the notebook accordingly. For another stock universe, also update the market-data path and related date settings in the notebook.
-
-## 📊 Dataset
-
-### Form
-The provided data is split into training, validation, and test sets, with 4 stock universes. (CSI 300, CSI 500, NASDAQ 100, S&P 500)
-
-In our code, the data will be gathered chronically and then grouped by prediction dates. the data iterated by the data loader is of shape (T, N, F), where:
-
-- T - length of lookback_window, T=20.
-- N - number of stocks. 
-- F - 5 for NASDAQ 100 and S&P 500 including high, low, open, close, volume. 6 for CSI 300 and CSI 500 including high, low, open, close, volume, turnover.
-
-### Market Index
-For convenience and fairness, we extract the market index as the mean value of the stocks included in the target set.
-
-## 📚 Citation
-
-If you find this repository helpful, please cite our paper:
+Paper: [arXiv:2502.06707](https://arxiv.org/abs/2502.06707)
 
 ```bibtex
 @article{hu2025finmamba,
@@ -191,6 +101,3 @@ If you find this repository helpful, please cite our paper:
   year={2025}
 }
 ```
-
-
-
