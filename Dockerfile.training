@@ -1,0 +1,14 @@
+FROM pytorch/pytorch:2.8.0-cuda12.9-cudnn9-runtime
+
+ENV MAMBA_FORCE_BUILD=TRUE \
+    MAMBA_SKIP_CUDA_BUILD=TRUE \
+    FINMAMBA_MAMBA_REFERENCE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1
+
+RUN python -m pip install --upgrade pip setuptools wheel packaging ninja
+RUN python -m pip install numpy pandas scipy tqdm requests torch-geometric einops huggingface-hub transformers tokenizers safetensors regex
+RUN python -m pip install --no-build-isolation --no-deps mamba-ssm==2.3.2.post1
+
+WORKDIR /workspace
+CMD ["python", "train_finmamba.py", "--help"]

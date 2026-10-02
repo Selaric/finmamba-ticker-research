@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import os
+import sys
+import types
 
 import torch
 import torch.nn as nn
@@ -16,6 +19,10 @@ except ModuleNotFoundError as exc:  # pragma: no cover - depends on runtime envi
 else:
     _PYG_IMPORT_ERROR = None
 
+_USE_MAMBA_REFERENCE = os.environ.get("FINMAMBA_MAMBA_REFERENCE") == "1"
+if _USE_MAMBA_REFERENCE:
+    sys.modules.setdefault("selective_scan_cuda", types.ModuleType("selective_scan_cuda"))
+
 try:
     from mamba_ssm import Mamba
 except ModuleNotFoundError as exc:  # pragma: no cover - depends on runtime environment
@@ -23,6 +30,11 @@ except ModuleNotFoundError as exc:  # pragma: no cover - depends on runtime envi
     _MAMBA_IMPORT_ERROR: ModuleNotFoundError | None = exc
 else:
     _MAMBA_IMPORT_ERROR = None
+    if _USE_MAMBA_REFERENCE:
+        import mamba_ssm.modules.mamba_simple as _mamba_simple
+        from mamba_ssm.ops.selective_scan_interface import selective_scan_ref
+
+        _mamba_simple.selective_scan_fn = selective_scan_ref
 
 
 def _require_model_dependencies() -> None:
@@ -191,6 +203,7 @@ class MultiHeadMamba(nn.Module):
                     d_state=d_state,
                     d_conv=d_conv,
                     expand=expand,
+                    use_fast_path=not _USE_MAMBA_REFERENCE,
                 )
                 for index in range(num_heads)
             ]

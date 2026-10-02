@@ -86,7 +86,7 @@ def load_feature_tensor(
     stock_num = int(frame["instrument"].nunique())
     day_num = int(frame["datetime"].nunique())
     feature_num = int(frame.shape[1] - 2)
-    values = frame.drop(columns=["datetime", "instrument"]).to_numpy()
+    values = frame.drop(columns=["datetime", "instrument"]).to_numpy(copy=True)
     expected_shape = (day_num * stock_num, feature_num)
     if values.shape != expected_shape:
         raise ValueError(
@@ -139,18 +139,37 @@ def calculate_relations(
     n: int,
     method: str,
 ) -> torch.Tensor:
-    stock_num = all_stocks.size(0)
-    result = torch.zeros(stock_num, device=all_stocks.device)
-    correlation = cal_spearman if method == "spearman" else cal_pccs
+    if xs.ndim != 2 or all_stocks.ndim != 3:
+        raise ValueError("xs must have shape (features, days) and all_stocks (stocks, features, days)")
+    if xs.shape != all_stocks.shape[1:]:
+        raise ValueError(
+            f"xs shape {tuple(xs.shape)} must match each stock panel {tuple(all_stocks.shape[1:])}"
+        )
+    if n <= 0:
+        raise ValueError(f"n must be positive, got {n}")
 
-    for stock_index in range(stock_num):
-        stock_features = all_stocks[stock_index]
-        per_feature = [
-            correlation(feature, stock_features[position], n)
-            for position, feature in enumerate(xs)
-        ]
-        result[stock_index] = torch.mean(torch.stack(per_feature))
-    return result
+    if method == "spearman":
+        target = torch.argsort(torch.argsort(xs, dim=-1), dim=-1).to(all_stocks.dtype)
+        values = torch.argsort(
+            torch.argsort(all_stocks, dim=-1), dim=-1
+        ).to(all_stocks.dtype)
+    elif method == "pcc":
+        target = xs
+        values = all_stocks
+    else:
+        raise ValueError(f"Unknown correlation method: {method!r}")
+
+    target_sum = target.sum(dim=-1)
+    target_sum_squared = target.square().sum(dim=-1)
+    values_sum = values.sum(dim=-1)
+    values_sum_squared = values.square().sum(dim=-1)
+    sum_products = torch.einsum("ft,nft->nf", target, values)
+
+    numerator = n * sum_products - target_sum.unsqueeze(0) * values_sum
+    target_variance = n * target_sum_squared - target_sum.square()
+    values_variance = n * values_sum_squared - values_sum.square()
+    denominator = torch.sqrt(values_variance * target_variance.unsqueeze(0) + 1e-6)
+    return torch.nan_to_num((numerator / denominator).mean(dim=1), nan=0.0)
 
 
 def stock_cor_matrix(
@@ -163,21 +182,29 @@ def stock_cor_matrix(
     start_day = max(0, day - (lookback - 1))
     window = features[start_day : day + 1].permute(1, 2, 0)
     stock_num = window.size(0)
-    relation = torch.zeros(
-        (stock_num, stock_num), dtype=features.dtype, device=features.device
+    if method == "spearman":
+        values = torch.argsort(
+            torch.argsort(window, dim=-1), dim=-1
+        ).to(features.dtype)
+    elif method == "pcc":
+        values = window
+    else:
+        raise ValueError(f"Unknown correlation method: {method!r}")
+
+    sum_values = values.sum(dim=-1).transpose(0, 1)
+    sum_values_squared = values.square().sum(dim=-1).transpose(0, 1)
+    feature_values = values.permute(1, 0, 2)
+    sum_products = torch.einsum("fit,fjt->fij", feature_values, feature_values)
+    numerator = lookback * sum_products - sum_values.unsqueeze(2) * sum_values.unsqueeze(1)
+    variance = lookback * sum_values_squared - sum_values.square()
+    denominator = torch.sqrt(variance.unsqueeze(2) * variance.unsqueeze(1) + 1e-6)
+    relation = torch.nan_to_num(
+        (numerator / denominator).mean(dim=0),
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
     )
-
-    for stock_index in range(stock_num):
-        # Keep n=lookback for the first lookback-1 days to match the source script.
-        relation[stock_index] = calculate_relations(
-            window[stock_index],
-            window,
-            n=lookback,
-            method=method,
-        )
-        relation[stock_index, stock_index] = 1
-
-    relation[torch.isnan(relation)] = 0
+    relation.fill_diagonal_(1)
     return relation
 
 

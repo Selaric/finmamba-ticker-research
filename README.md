@@ -82,6 +82,45 @@ nasdaq_stock_relation/
 
 One `day{index}.pkl` file is required for each trading day used by the training, validation, and test periods. The output directory must be the same as the relation directory configured for training. Use `--method pcc` instead of `--method spearman` to generate Pearson-correlation graphs.
 
+### Analyze Inverse Relationships Between Individual Tickers
+
+The standalone research baseline downloads adjusted closes, screens individual ticker pairs for persistent negative daily-return correlation using training data only, labels low/mid/high SPY-volatility regimes using training-period terciles, and evaluates a simple 20-day mean-reversion score by daily Spearman rank IC and forward-return buckets. It does not modify or train FinMamba; it gives us a transparent baseline to compare against.
+
+By default, the script fetches the current 101-symbol Nasdaq-100 roster from Nasdaq's components API and saves the roster date. Applying today's members to historical years creates survivorship bias; use point-in-time index membership before treating results as robust. A smaller explicit universe can be supplied with `--tickers`.
+
+Set up the project-local environment in PowerShell:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-research.txt
+.\.venv\Scripts\python.exe research_ticker_pairs.py
+```
+
+The default training period ends on 2019-12-31 and the holdout begins on 2020-01-01. The pair screen uses non-overlapping 60-return windows; a candidate must have a latest training correlation at or below -0.3 and meet that threshold in at least 75% of its observed windows. The SPY 20-day realized-volatility cutoffs are fit on training data and then held fixed in the test period. The baseline score is the negative 20-day past return; its daily rank IC and next-day-return buckets are evaluated only on the holdout.
+
+The script writes adjusted closes, the roster snapshot, training-selected pairs, pair correlations by test regime, daily and summary IC, and return buckets under `outputs/ticker_research_nasdaq100/`. Pair correlation is descriptive, not a prediction that one ticker will fall when another rises. The score is a deliberately simple baseline, not a FinMamba result or a trading signal; include costs and realistic shorting constraints in any later strategy test.
+
+See [PAIR_RESEARCH_RESULTS.md](PAIR_RESEARCH_RESULTS.md) for the pair-screen baseline and [FINMAMBA_RESULTS.md](FINMAMBA_RESULTS.md) for the trained-model experiment.
+
+### CPU Reference Training
+
+For a Linux CPU run without an NVIDIA adapter, build the isolated image and prepare the OHLCV panels and daily relation files first:
+
+```powershell
+docker build -t finmamba-cpu -f Dockerfile.training .
+.\.venv\Scripts\python.exe prepare_finmamba_data.py
+docker run --rm -v "${PWD}:/workspace" -w /workspace finmamba-cpu python genRelation.py --stock nasdaq --data-dir data --output-dir nasdaq_stock_relation --lookback 20 --method spearman --device cpu
+```
+
+Then train and evaluate:
+
+```powershell
+docker run --rm -v "${PWD}:/workspace" -w /workspace finmamba-cpu python train_finmamba.py --stock nasdaq --data-dir data --relation-dir nasdaq_stock_relation --train-start 2018-01-01 --train-end 2021-12-31 --valid-start 2022-01-01 --valid-end 2022-12-31 --test-start 2023-01-01 --test-end 2026-09-24 --seq-len 20 --epochs 1 --batch-size 16 --device cpu --output-dir outputs/finmamba_reference --prediction-layout date-major
+docker run --rm -v "${PWD}:/workspace" -w /workspace finmamba-cpu python evaluate_finmamba_outputs.py
+```
+
+The training image sets `FINMAMBA_MAMBA_REFERENCE=1`, which uses the upstream PyTorch reference scan and disables the optimized CUDA path. It preserves the Mamba recurrence but is slower and is intended for small feasibility experiments. The standard path remains unchanged when this environment variable is unset.
+
 ### Step 2: Train and Evaluate FinMamba
 
 After all daily relation graphs have been generated, train FinMamba with:
